@@ -16,15 +16,53 @@ BACKLOG=5
 
 -- create a TCP socket and bind it to the local host, at any port
 server=assert(socket.tcp())
-assert(server:bind("*", PORT))
+assert(server:bind('0.0.0.0', PORT))
 server:listen(BACKLOG)
 
 local WebServer = {};
 
+local gameToWebServerDataChannel = love.thread.getChannel("gameToWebServerDataChannel")
+local webServerToGameDataChannel = love.thread.getChannel("webServerToGameChannel")
+
 -- stored data from thread channel messages for use in web server
 WebServer.data = {
-    cards = {},
+    state = nil,
+    actions = {
+        flip = {
+            name = "Flippy",
+            description = "Flip the card",
+            enabled = true,
+        }
+    },
+    cards = "",
 }
+
+WebServer.routes = {
+    GET = {},
+    POST = {},
+}
+
+WebServer.get = function(route, callback)
+    WebServer.routes.GET[route] = callback
+end
+
+WebServer.post = function(route, callback)
+    WebServer.routes.POST[route] = callback
+end
+
+WebServer.post("actions/flip", function()
+    if(not WebServer.data.actions.flip.enabled) then
+        return json.encode(WebServer.data)
+    end
+
+    webServerToGameDataChannel:push("flip")
+    WebServer.data.actions.flip.enabled = false
+    return json.encode(WebServer.data)
+end)
+
+WebServer.get("hand", function()
+    return WebServer.data.cards
+end)
 
 WebServer.process = function()
     local client,err = server:accept()
@@ -32,23 +70,42 @@ WebServer.process = function()
 	if client then
 		local line, err = client:receive()
         if not err then
-            local path = line:match("GET /(.*) HTTP/1.1")
+            local getPath = line:match("GET /(.*) HTTP/1.1")
             
-            if path == "" or path == nil then
-                path = "index.html"
+            if getPath == "" or getPath == nil then
+                getPath = "index.html"
+                if WebServer.data.state == 1 then
+                WebServer.data.actions.flip.enabled = true
+                end
             end
 
-            if path == "api" then
+            if WebServer.routes.GET[getPath] then
+                local data = WebServer.routes.GET[getPath]()
+                client:send("HTTP/1.1 200/OK\r\nContent-Type: text/html\r\n\r\n"..data)
+                client:close()
+                return
+            end   
+            
+            local postPath = line:match("POST /(.*) HTTP/1.1")
+            if WebServer.routes.POST[postPath] then
+                local data = WebServer.routes.POST[postPath]()
+                client:send("HTTP/1.1 200/OK\r\nContent-Type: text/html\r\n\r\n"..data)
+                client:close()
+                return
+            end
+
+            if getPath == "api" then
+                --webServerToGameDataChannel:push("flip")
                 local data = json.encode(WebServer.data)
                 client:send("HTTP/1.1 200/OK\r\nContent-Type: application/json\r\n\r\n"..data)
                 client:close()
                 return
             end
             
-            local type = path:match(".*%.(.*)") or "html"
+            local type = getPath:match(".*%.(.*)") or "html"
             local content = ""
 
-            local file = love.filesystem.newFile("/Mods/BalatroSabotage/web/"..path)
+            local file = love.filesystem.newFile("/Mods/BalatroSabotage/web/"..getPath)
             if file:open("r") then
                  content = content..file:read(file:getSize())
                 client:send("HTTP/1.1 200/OK\r\nContent-Type: text/"..type.."\r\n\r\n"..content)
@@ -61,22 +118,35 @@ WebServer.process = function()
 	client:close()
 end
 
-local gameToWebServerDataChannel = love.thread.getChannel("gameToWebServerDataChannel")
-function injestGameToWebServerData()
-    local message = gameToWebServerDataChannel:pop()
-    if message then
-        if not message.field or not message.value then
-            return
+local webCoroutine = coroutine.create(function()
+    local maxRequests = 1
+    while true do
+        for i=1, maxRequests do
+            WebServer.process()
         end
-
-        WebServer.data[message.field] = message.value
+        coroutine.yield()
     end
-end
+end)
+
+local ingestCoroutine = coroutine.create(function()
+    while true do
+        local message = gameToWebServerDataChannel:pop()
+        if message then
+            if not message.field or not message.value then
+                print("Invalid message")
+            else
+                WebServer.data[message.field] = message.value
+            end
+        else
+            coroutine.yield()
+        end
+    end
+end)
 
 WebServer.loop = function()
-    while 1 do
-        injestGameToWebServerData()
-        WebServer.process()
+    while true do
+        coroutine.resume(webCoroutine)
+        coroutine.resume(ingestCoroutine)
     end
 end
 

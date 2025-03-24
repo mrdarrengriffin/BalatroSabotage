@@ -2,20 +2,21 @@ local DATA = {
 	round_chips = 0
 }
 
-local webserver = SMODS.load_file("libs/server.lua", "Sabotage")();
 local web = SMODS.load_file("libs/web.lua", "Sabotage")();
+local json = assert(love.filesystem.load("/Mods/BalatroSabotage/libs/json/json.lua"))()
 
 local webThread = love.thread.newThread(web);
-local webserverThread = love.thread.newThread(webserver);
 webThread:start(SMODS.current_mod.path);
-webserverThread:start();
 
 local gameToWebServerDataChannel = love.thread.getChannel("gameToWebServerDataChannel")
-local webToGameChannel = love.thread.getChannel("webToGameChannel")
+local webServerToGameDataChannel = love.thread.getChannel("webServerToGameChannel")
 
 local game_update_ref = Game.update
 
 local done = 0
+local hasDrawn = false;
+local lastState = nil;
+local busy = false;
 function Game:update(dt)
     local ret = game_update_ref(self, dt)
     -- things and such
@@ -24,35 +25,98 @@ function Game:update(dt)
 		DATA.round_chips = G.GAME.chips_text;
 	end
 
-    if(G.STATE == G.STATES.DRAW_TO_HAND) then
-        local txt = "";
-        
-        if(done > 4) then
-            sendDebugMessage(inspect(G.deck.cards[1].config), "Sabotage");
-        end
-        
-        done = done + 1;
-        for i = 1, #G.deck.cards do
-            local card = G.deck.cards[i];
-        end
-        gameToWebServerDataChannel:push({field = "cards", value = txt});
+    if G.STATE ~= lastState then
+        lastState = G.STATE;
+        sendInfoMessage("State: " .. G.STATE, "Sabotage");
+        gameToWebServerDataChannel:push({field = "state", value = lastState})
     end
 
-    local message = webToGameChannel:pop()
-    if message then
-        if(message.type == "chips") then
-            G.E_MANAGER:add_event(Event({
-                trigger = "ease",
-                delay = 2,
-                ref_table = G.GAME,
-                ref_value = "chips",
-                ease_to = G.GAME.chips + message.value,
-            }))
+
+    local message = webServerToGameDataChannel:pop()
+    if message and not busy then
+        if G.STATE == G.STATES.SELECTING_HAND then
+            if message == "requestCards" then
+                if G.STATE == 1 then
+                    local cards = {}
+                    for i=1, #G.hand.cards do
+                        cards[i] = G.P_CARDS[G.hand.cards[i].config.card_key].name
+                    end
+                    gameToWebServerDataChannel:push({field = "cards", value = cards})
+                end
+            elseif message == "flip" then
+                busy = true;
+                sendInfoMessage("Flipping card", "Sabotage");
+                G.hand.cards[1]:flip();
+                play_sound("card1")
+                G.E_MANAGER:add_event(Event({
+                    trigger = 'after',
+                    delay = 0.25,
+                    func = function()
+                        G.hand:shuffle();
+                        play_sound("paper1")
+                        return true;
+                    end
+                }))
+                G.E_MANAGER:add_event(Event({
+                    trigger = 'after',
+                    delay = 1,
+                    func = function()
+                        G.hand.cards[3]:flip();
+                        play_sound("card1")
+                        return true;
+                    end
+                }))
+                G.E_MANAGER:add_event(Event({
+                    trigger = 'after',
+                    delay = 0.25,
+                    func = function()
+                        G.hand:shuffle();
+                        play_sound("paper1")
+                        return true;
+                    end
+                }))
+                G.E_MANAGER:add_event(Event({
+                    trigger = 'after',
+                    delay = 1,
+                    func = function()
+                        G.hand.cards[5]:flip();
+                        play_sound("card1")
+                        return true;
+                    end
+                }))
+                G.E_MANAGER:add_event(Event({
+                    trigger = 'after',
+                    delay = 0.25,
+                    func = function()
+                        G.hand:shuffle();
+                        play_sound("paper1")
+                        sendInfoMessage("Flipped card", "Sabotage");
+                        busy = false;
+                        return true;
+                    end
+                }))
+                
+            end
         end
     end
 
     return ret
 end    
 
+local event
+event = Event {
+    blockable = false,
+    blocking = false,
+    pause_force = true,
+    no_delete = true,
+    trigger = "after",
+    delay = 0.5,
+    timer = "UPTIME",
+    func = function()
+        webServerToGameDataChannel:push("requestCards")
+        event.start_timer = false
+    end
+}
+G.E_MANAGER:add_event(event)
 
 

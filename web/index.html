@@ -1,11 +1,105 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Document</title>
+    <link rel="stylesheet" href="/assets/css/style.css">
 </head>
+
 <body>
-    Hello world!
+    <div class="buttons"></div>
+    <script>
+        let states = {
+            SMODS_BOOSTER_OPENED: 999,
+            SELECTING_HAND: 1,
+            HAND_PLAYED: 2,
+            DRAW_TO_HAND: 3,
+            GAME_OVER: 4,
+            SHOP: 5,
+            PLAY_TAROT: 6,
+            BLIND_SELECT: 7,
+            ROUND_EVAL: 8,
+            TAROT_PACK: 9,
+            PLANET_PACK: 10,
+            MENU: 11,
+            TUTORIAL: 12,
+            SPLASH: 13,
+            SANDBOX: 14,
+            SPECTRAL_PACK: 15,
+            DEMO_CTA: 16,
+            STANDARD_PACK: 17,
+            BUFFOON_PACK: 18,
+            NEW_ROUND: 19,
+        }
+
+        let apiTimeout;
+        let apiData;
+
+        function apiLoop() {
+            clearTimeout(apiTimeout);
+            fetch("/api", {
+                method: "GET",
+                headers: {
+                    "Content-Type": "application/json"
+                }
+            }).then(response => {
+                return response.json();
+            }).then(data => {
+                apiData = data;
+                data.state_text = Object.keys(states).find(key => states[key] === data.state);
+                document.querySelector("pre").textContent = JSON.stringify(data, null, 4);
+            }).finally(() => {
+                updateButtons();
+                apiTimeout = setTimeout(apiLoop, 1000);
+            });
+        };
+        apiLoop();
+
+        function updateButtons(){
+            let buttons = document.querySelector(".buttons");
+            if(!apiData) return;
+            if(!apiData.actions) return;
+            const actions = apiData.actions;
+            Object.keys(actions).forEach(key => {
+                let _info = actions[key];
+
+                let existing = buttons.querySelector(`[data-action="${key}"]`);
+                if(existing){
+                    if(_info.enabled){
+                        existing.classList.remove("disabled");
+                    } else {
+                        existing.classList.add("disabled");
+                    }
+                    return;
+                }
+
+
+                let button = document.createElement("div");
+                button.classList.add("button","red");
+                button.dataset.action = key;
+                button.textContent = _info.name;
+                if(!_info.enabled) button.classList.add("disabled");
+                buttons.appendChild(button);
+            });
+        }
+
+
+        document.querySelector(".buttons").addEventListener("click", (e) => {
+            if(e.target.classList.contains("button")){
+                let action = e.target.dataset.action;
+                fetch("/actions/" + action, {
+                    method: "POST"
+                }).then(response => {
+                    return response.json();
+                }).then(data => {
+                    apiData = data;
+                    updateButtons();
+                });
+            }
+        });
+    </script>
 </body>
+
 </html>
